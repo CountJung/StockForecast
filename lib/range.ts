@@ -3,6 +3,7 @@ const RANGE_DAYS: Record<string, number | null> = {
   '3m': 93,
   '6m': 186,
   '1y': 366,
+  '2y': 365 * 2 + 1,
   '5y': 365 * 5 + 1,
   max: null
 }

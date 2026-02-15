@@ -88,7 +88,7 @@ export async function GET(request: Request) {
     const rangeParam = (searchParams.get('range') ?? '6m').toLowerCase()
 
     if (!isValidRange(rangeParam)) {
-      return NextResponse.json({ error: 'range must be one of 1m,3m,6m,1y,5y,max' }, { status: 400 })
+      return NextResponse.json({ error: 'range must be one of 1m,3m,6m,1y,2y,5y,max' }, { status: 400 })
     }
 
     const mappedTicker = normalizeTicker(tickerParam)

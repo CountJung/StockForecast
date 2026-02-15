@@ -1,164 +1,149 @@
 import { NextResponse } from 'next/server'
-import type { ForecastRequest, ForecastResponse } from '@/lib/types'
+import { runBootstrapForecast } from '@/lib/forecastBootstrap'
+import type { AnalystTargets, ForecastRequestBody, ForecastResponse } from '@/lib/types'
 
-const SIMULATIONS = 2000
+const ALLOWED_HORIZONS = [5, 20, 60] as const
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' }
 
-function boxMullerRandom() {
-  let u = 0
-  let v = 0
+class ValidationError extends Error {}
 
-  while (u === 0) u = Math.random()
-  while (v === 0) v = Math.random()
-
-  const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v)
-  return Number.isFinite(z) ? z : 0
+function isFinitePositive(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
-function quantile(values: number[], q: number): number {
-  if (values.length === 0) {
-    return 0
+function sanitizeAnalyst(analyst: unknown): AnalystTargets | undefined {
+  if (!analyst || typeof analyst !== 'object') {
+    return undefined
   }
 
-  const sorted = [...values].sort((a, b) => a - b)
-  const pos = (sorted.length - 1) * q
-  const base = Math.floor(pos)
-  const rest = pos - base
+  const raw = analyst as Record<string, unknown>
+  const out: AnalystTargets = {}
 
-  const lower = sorted[base] ?? sorted[sorted.length - 1]
-  const upper = sorted[base + 1] ?? lower
-  const value = lower + rest * (upper - lower)
+  if (raw.ptLow !== undefined) {
+    if (!isFinitePositive(raw.ptLow)) throw new ValidationError('analyst.ptLow must be a positive finite number')
+    out.ptLow = raw.ptLow
+  }
 
-  return Number.isFinite(value) ? value : lower
+  if (raw.ptAvg !== undefined) {
+    if (!isFinitePositive(raw.ptAvg)) throw new ValidationError('analyst.ptAvg must be a positive finite number')
+    out.ptAvg = raw.ptAvg
+  }
+
+  if (raw.ptHigh !== undefined) {
+    if (!isFinitePositive(raw.ptHigh)) throw new ValidationError('analyst.ptHigh must be a positive finite number')
+    out.ptHigh = raw.ptHigh
+  }
+
+  return Object.keys(out).length ? out : undefined
 }
 
-function safeNumber(value: unknown): number | null {
-  if (typeof value !== 'number') {
-    return null
+function parseBody(body: unknown): ForecastRequestBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('body must be a JSON object')
   }
 
-  if (!Number.isFinite(value)) {
-    return null
+  const payload = body as Partial<ForecastRequestBody>
+  const ticker = typeof payload.ticker === 'string' ? payload.ticker.trim().toUpperCase() : ''
+
+  if (!ticker) {
+    throw new ValidationError('ticker is required')
   }
 
-  return value
-}
-
-function parseInput(body: unknown): ForecastRequest {
-  const payload = body as Partial<ForecastRequest>
-  const closesRaw = Array.isArray(payload?.closes) ? payload.closes : null
-  const horizon = safeNumber(payload?.horizon)
-
-  if (!closesRaw || closesRaw.length < 3) {
-    throw new Error('closes must be an array with at least 3 values')
+  if (payload.range !== '2y' && payload.range !== '5y') {
+    throw new ValidationError('range must be one of 2y or 5y')
   }
 
-  if (horizon === null || !Number.isInteger(horizon) || horizon < 1 || horizon > 365) {
-    throw new Error('horizon must be an integer between 1 and 365')
+  if (!Array.isArray(payload.horizons) || payload.horizons.length < 1 || payload.horizons.length > 3) {
+    throw new ValidationError('horizons must be an array of 1 to 3 items')
   }
 
-  const closes = closesRaw
-    .map((x) => safeNumber(x))
-    .filter((x): x is number => x !== null && x > 0)
-
-  if (closes.length !== closesRaw.length) {
-    throw new Error('closes must contain only positive finite numbers')
+  const uniqueHorizons = [...new Set(payload.horizons)]
+  if (uniqueHorizons.length !== payload.horizons.length) {
+    throw new ValidationError('horizons must not contain duplicates')
   }
 
-  return { closes, horizon }
+  if (uniqueHorizons.some((h) => !Number.isInteger(h) || !ALLOWED_HORIZONS.includes(h as (typeof ALLOWED_HORIZONS)[number]))) {
+    throw new ValidationError('horizons must be selected from [5, 20, 60]')
+  }
+
+  if (!Array.isArray(payload.closes) || payload.closes.length < 120) {
+    throw new ValidationError('closes must be an array with at least 120 values')
+  }
+
+  const closes = payload.closes.map((v) => Number(v))
+  if (closes.some((v) => !isFinitePositive(v))) {
+    throw new ValidationError('closes must contain only positive finite numbers')
+  }
+
+  if (payload.dates !== undefined) {
+    if (!Array.isArray(payload.dates) || payload.dates.some((d) => typeof d !== 'string')) {
+      throw new ValidationError('dates must be an array of strings when provided')
+    }
+  }
+
+  const analyst = sanitizeAnalyst(payload.analyst)
+
+  return {
+    ticker,
+    range: payload.range,
+    horizons: uniqueHorizons,
+    closes,
+    dates: payload.dates,
+    analyst
+  }
 }
 
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as unknown
-    const { closes, horizon } = parseInput(body)
-    const lastClose = closes[closes.length - 1]
+    const parsed = parseBody(body)
 
-    if (!Number.isFinite(lastClose) || lastClose <= 0) {
-      throw new Error('Invalid closing price series')
-    }
+    const targetPriceByHorizon =
+      parsed.analyst?.ptAvg !== undefined && parsed.horizons.includes(60)
+        ? { 60: parsed.analyst.ptAvg }
+        : undefined
 
-    const logReturns: number[] = []
-    for (let i = 1; i < closes.length; i += 1) {
-      const prev = closes[i - 1]
-      const current = closes[i]
-      const ratio = current / prev
-      const ret = Math.log(ratio)
+    const result = runBootstrapForecast({
+      closes: parsed.closes,
+      horizons: parsed.horizons,
+      simulations: 2000,
+      blockSize: 5,
+      targetPriceByHorizon
+    })
 
-      if (Number.isFinite(ret)) {
-        logReturns.push(ret)
-      }
-    }
-
-    if (logReturns.length < 2) {
-      throw new Error('Not enough valid log returns for forecasting')
-    }
-
-    const mu = logReturns.reduce((sum, r) => sum + r, 0) / logReturns.length
-
-    const variance =
-      logReturns.reduce((sum, r) => {
-        const d = r - mu
-        return sum + d * d
-      }, 0) / Math.max(logReturns.length - 1, 1)
-
-    const sigma = Math.sqrt(Math.max(variance, 0))
-
-    if (!Number.isFinite(mu) || !Number.isFinite(sigma)) {
-      throw new Error('Failed to estimate mu/sigma from closes')
-    }
-
-    const pathMins: number[] = []
-    const pathMaxs: number[] = []
-
-    for (let i = 0; i < SIMULATIONS; i += 1) {
-      let price = lastClose
-      let pathMin = lastClose
-      let pathMax = lastClose
-
-      for (let day = 0; day < horizon; day += 1) {
-        const z = boxMullerRandom()
-        const drift = mu - 0.5 * sigma * sigma
-        const diffusion = sigma * z
-        const nextPrice = price * Math.exp(drift + diffusion)
-
-        if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
-          continue
+    const h60 = result.horizons.find((h) => h.days === 60)
+    const analyst = parsed.analyst
+      ? {
+          ...parsed.analyst,
+          ...(h60?.probAboveTarget !== undefined ? { ptAvgProb60d: h60.probAboveTarget } : {})
         }
+      : undefined
 
-        price = nextPrice
-        if (price < pathMin) pathMin = price
-        if (price > pathMax) pathMax = price
-      }
-
-      if (Number.isFinite(pathMin) && Number.isFinite(pathMax) && pathMin > 0 && pathMax > 0) {
-        pathMins.push(pathMin)
-        pathMaxs.push(pathMax)
-      }
+    const response: ForecastResponse = {
+      ticker: parsed.ticker,
+      asOf: new Date().toISOString(),
+      lastClose: result.lastClose,
+      method: 'bootstrap_block',
+      simulations: result.simulations,
+      horizons: result.horizons.map(({ probAboveTarget, ...h }) => h),
+      ...(analyst ? { analyst } : {})
     }
 
-    if (pathMins.length === 0 || pathMaxs.length === 0) {
-      throw new Error('Simulation failed due to invalid numeric states')
-    }
-
-    const low = quantile(pathMins, 0.1)
-    const high = quantile(pathMaxs, 0.9)
-
-    if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high <= 0 || low > high) {
-      throw new Error('Invalid forecast quantiles')
-    }
-
-    const payload: ForecastResponse = {
-      low,
-      high,
-      horizon,
-      simulations: SIMULATIONS,
-      mu,
-      sigma
-    }
-
-    return NextResponse.json(payload)
+    return NextResponse.json(response, {
+      status: 200,
+      headers: NO_STORE_HEADERS
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown server error'
-    return NextResponse.json({ error: message }, { status: 400 })
+    const message = error instanceof Error ? error.message : 'Unexpected server error'
+
+    if (error instanceof ValidationError) {
+      return NextResponse.json({ error: message }, { status: 400, headers: NO_STORE_HEADERS })
+    }
+
+    return NextResponse.json({ error: message }, { status: 500, headers: NO_STORE_HEADERS })
   }
+}
+
+export function GET() {
+  return NextResponse.json({ error: 'Method Not Allowed' }, { status: 405, headers: NO_STORE_HEADERS })
 }

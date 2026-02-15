@@ -16,8 +16,9 @@ import {
   ToggleButtonGroup,
   Typography
 } from '@mui/material'
-import { ForecastChart } from '@/components/ForecastChart'
-import type { QuoteItem } from '@/lib/types'
+import { PriceChart } from '@/components/PriceChart'
+import { ScenarioPanel } from '@/components/ScenarioPanel'
+import type { ForecastResponse, PriceBar, QuoteItem } from '@/lib/types'
 
 type QuotesApiResponse = {
   ticker: string
@@ -26,72 +27,70 @@ type QuotesApiResponse = {
   ohlcv: QuoteItem[]
 }
 
-type ForecastApiResponse = {
-  low: number
-  high: number
-  horizon: number
-  simulations: number
-  mu: number
-  sigma: number
-}
-
-const RANGE_OPTIONS = ['1m', '3m', '6m', '1y', '5y', 'max'] as const
-const HORIZON_OPTIONS = [5, 10, 20, 30, 60] as const
+const RANGE_OPTIONS = ['2y', '5y'] as const
+const HORIZON_OPTIONS = [5, 20, 60] as const
 
 export default function HomePage() {
   const [ticker, setTicker] = useState('AAPL')
-  const [range, setRange] = useState<(typeof RANGE_OPTIONS)[number]>('6m')
-  const [horizon, setHorizon] = useState<(typeof HORIZON_OPTIONS)[number]>(20)
-  const [quotes, setQuotes] = useState<QuoteItem[]>([])
-  const [mappedTicker, setMappedTicker] = useState('')
-  const [forecast, setForecast] = useState<ForecastApiResponse | null>(null)
+  const [range, setRange] = useState<(typeof RANGE_OPTIONS)[number]>('2y')
+  const [horizons, setHorizons] = useState<number[]>([5, 20, 60])
+  const [bars, setBars] = useState<PriceBar[]>([])
+  const [forecast, setForecast] = useState<ForecastResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const summary = useMemo(() => {
-    if (!quotes.length || !forecast) return null
+  const lastClose = useMemo(() => {
+    if (!bars.length) return null
+    return bars[bars.length - 1].close
+  }, [bars])
 
-    const lastClose = quotes[quotes.length - 1].close
-    const lowDelta = ((forecast.low - lastClose) / lastClose) * 100
-    const highDelta = ((forecast.high - lastClose) / lastClose) * 100
-
-    return {
-      lastClose,
-      lowDelta,
-      highDelta
-    }
-  }, [quotes, forecast])
-
-  const handleSubmit = async () => {
+  const runAnalysis = async () => {
     setLoading(true)
     setError('')
 
     try {
-      const quotesResponse = await fetch(`/api/quotes?ticker=${encodeURIComponent(ticker)}&range=${range}`)
-      const quotesData = (await quotesResponse.json()) as QuotesApiResponse | { error: string }
-
-      if (!quotesResponse.ok || 'error' in quotesData) {
-        throw new Error('error' in quotesData ? quotesData.error : 'Failed to load quotes')
+      const normalizedTicker = ticker.trim().toUpperCase()
+      if (!normalizedTicker) {
+        throw new Error('Ticker를 입력해 주세요.')
       }
 
-      const closes = quotesData.ohlcv.map((item) => item.close)
+      if (!horizons.length) {
+        throw new Error('최소 1개의 horizon을 선택해 주세요.')
+      }
 
-      const forecastResponse = await fetch('/api/forecast', {
+      const quoteRes = await fetch(
+        `/api/quotes?ticker=${encodeURIComponent(normalizedTicker)}&range=${encodeURIComponent(range)}`
+      )
+      const quoteJson = (await quoteRes.json()) as QuotesApiResponse | { error: string }
+
+      if (!quoteRes.ok || 'error' in quoteJson) {
+        throw new Error('error' in quoteJson ? quoteJson.error : '시세 조회에 실패했습니다.')
+      }
+
+      const nextBars = quoteJson.ohlcv.map((item) => ({ date: item.time, close: item.close }))
+      const closes = nextBars.map((item) => item.close)
+
+      const forecastRes = await fetch('/api/forecast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ closes, horizon })
+        body: JSON.stringify({
+          ticker: normalizedTicker,
+          range,
+          horizons,
+          closes
+        })
       })
 
-      const forecastData = (await forecastResponse.json()) as ForecastApiResponse | { error: string }
-      if (!forecastResponse.ok || 'error' in forecastData) {
-        throw new Error('error' in forecastData ? forecastData.error : 'Failed to forecast')
+      const forecastJson = (await forecastRes.json()) as ForecastResponse | { error: string }
+      if (!forecastRes.ok || 'error' in forecastJson) {
+        throw new Error('error' in forecastJson ? forecastJson.error : '예측 계산에 실패했습니다.')
       }
 
-      setQuotes(quotesData.ohlcv)
-      setMappedTicker(quotesData.ticker)
-      setForecast(forecastData)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '요청 처리 중 알 수 없는 오류가 발생했습니다.'
+      setTicker(normalizedTicker)
+      setBars(nextBars)
+      setForecast(forecastJson)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '오류가 발생했습니다.'
       setError(message)
     } finally {
       setLoading(false)
@@ -106,7 +105,7 @@ export default function HomePage() {
             Stock Forecast Dashboard
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Stooq OHLCV + GBM Monte Carlo (2000 paths, 10-90% quantile)
+            Block bootstrap scenario engine (5D / 20D / 60D)
           </Typography>
         </Box>
 
@@ -152,15 +151,15 @@ export default function HomePage() {
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                    Horizon (days)
+                    Horizons
                   </Typography>
                   <ToggleButtonGroup
                     size="small"
-                    value={horizon}
-                    exclusive
+                    value={horizons}
                     fullWidth
-                    onChange={(_, value: (typeof HORIZON_OPTIONS)[number] | null) => {
-                      if (value) setHorizon(value)
+                    onChange={(_, value: number[]) => {
+                      const sorted = [...value].sort((a, b) => a - b)
+                      setHorizons(sorted)
                     }}
                   >
                     {HORIZON_OPTIONS.map((option) => (
@@ -174,11 +173,11 @@ export default function HomePage() {
                 <Button
                   variant="contained"
                   size="large"
-                  onClick={handleSubmit}
+                  onClick={runAnalysis}
                   disabled={loading}
                   sx={{ minWidth: { md: 200 }, py: 1.5 }}
                 >
-                  분석 실행
+                  분석
                 </Button>
               </Stack>
             </Stack>
@@ -187,7 +186,18 @@ export default function HomePage() {
 
         {loading ? <LinearProgress /> : null}
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? (
+          <Alert
+            severity="error"
+            action={
+              <Button color="inherit" size="small" onClick={runAnalysis} disabled={loading}>
+                다시 시도
+              </Button>
+            }
+          >
+            {error}
+          </Alert>
+        ) : null}
 
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
           <Card sx={{ flex: 1 }}>
@@ -196,62 +206,28 @@ export default function HomePage() {
                 Last Close
               </Typography>
               <Typography variant="h5" fontWeight={700}>
-                {summary ? summary.lastClose.toFixed(2) : <Skeleton width={120} />}
-              </Typography>
-            </CardContent>
-          </Card>
-
-          <Card sx={{ flex: 1 }}>
-            <CardContent>
-              <Typography variant="overline" color="text.secondary">
-                Forecast Low (P10)
-              </Typography>
-              <Typography variant="h5" fontWeight={700}>
-                {forecast ? forecast.low.toFixed(2) : <Skeleton width={120} />}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {summary ? `${summary.lowDelta.toFixed(2)}% vs close` : ' '} 
-              </Typography>
-            </CardContent>
-          </Card>
-
-          <Card sx={{ flex: 1 }}>
-            <CardContent>
-              <Typography variant="overline" color="text.secondary">
-                Forecast High (P90)
-              </Typography>
-              <Typography variant="h5" fontWeight={700}>
-                {forecast ? forecast.high.toFixed(2) : <Skeleton width={120} />}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {summary ? `${summary.highDelta.toFixed(2)}% vs close` : ' '} 
+                {lastClose !== null ? lastClose.toFixed(2) : <Skeleton width={120} />}
               </Typography>
             </CardContent>
           </Card>
         </Stack>
 
+        {loading && !forecast ? (
+          <Stack spacing={2}>
+            <Skeleton variant="rounded" height={180} />
+            <Skeleton variant="rounded" height={440} />
+          </Stack>
+        ) : null}
+
+        {forecast ? <ScenarioPanel data={forecast} /> : null}
+
         <Card>
           <CardContent>
             <Stack spacing={1.5}>
               <Typography variant="h6" fontWeight={700}>
-                {mappedTicker || '선택한 종목'} Close + Forecast Band
+                {ticker || '선택한 종목'} Price + Forecast Bands
               </Typography>
-              {!quotes.length && loading ? (
-                <Skeleton variant="rounded" height={420} />
-              ) : (
-                <ForecastChart
-                  ohlcv={quotes}
-                  forecast={
-                    forecast
-                      ? {
-                          low: forecast.low,
-                          high: forecast.high,
-                          horizon: forecast.horizon
-                        }
-                      : null
-                  }
-                />
-              )}
+              <PriceChart bars={bars} forecast={forecast ?? undefined} analyst={forecast?.analyst} />
             </Stack>
           </CardContent>
         </Card>
