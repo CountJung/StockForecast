@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef } from 'react'
+import { useTheme } from '@mui/material/styles'
 import {
   BaselineSeries,
   ColorType,
@@ -42,6 +43,15 @@ export function PriceChart({ bars, forecast, analyst }: Props) {
   const chartRef = useRef<IChartApi | null>(null)
   const closeSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const overlaySeriesRef = useRef<Array<ISeriesApi<'Line'> | ISeriesApi<'Baseline'>>>([])
+  const muiTheme = useTheme()
+  const isDark = muiTheme.palette.mode === 'dark'
+
+  const bgColor = isDark ? '#1e1e1e' : '#ffffff'
+  const textColor = isDark ? '#e0e0e0' : '#1f2937'
+  const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(148,163,184,0.2)'
+  const legendBg = isDark ? 'rgba(30,30,30,0.92)' : 'rgba(255,255,255,0.9)'
+  const legendBorder = isDark ? 'rgba(80,80,80,0.6)' : 'rgba(203,213,225,0.8)'
+  const legendTextColor = isDark ? '#ccc' : '#333'
 
   const closeData = useMemo(
     () => bars.map((item) => ({ time: item.date as Time, value: item.close })),
@@ -56,12 +66,12 @@ export function PriceChart({ bars, forecast, analyst }: Props) {
       width: container.clientWidth,
       height: 440,
       layout: {
-        background: { type: ColorType.Solid, color: '#ffffff' },
-        textColor: '#1f2937'
+        background: { type: ColorType.Solid, color: bgColor },
+        textColor
       },
       grid: {
-        vertLines: { color: 'rgba(148, 163, 184, 0.2)' },
-        horzLines: { color: 'rgba(148, 163, 184, 0.2)' }
+        vertLines: { color: gridColor },
+        horzLines: { color: gridColor }
       },
       timeScale: {
         rightOffset: 8,
@@ -98,7 +108,23 @@ export function PriceChart({ bars, forecast, analyst }: Props) {
       chartRef.current = null
       closeSeriesRef.current = null
     }
-  }, [])
+  }, [bgColor, textColor, gridColor])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    chart.applyOptions({
+      layout: {
+        background: { type: ColorType.Solid, color: bgColor },
+        textColor
+      },
+      grid: {
+        vertLines: { color: gridColor },
+        horzLines: { color: gridColor }
+      }
+    })
+  }, [bgColor, textColor, gridColor])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -223,12 +249,13 @@ export function PriceChart({ bars, forecast, analyst }: Props) {
           position: 'absolute',
           top: 8,
           left: 8,
-          background: 'rgba(255,255,255,0.9)',
-          border: '1px solid rgba(203,213,225,0.8)',
+          background: legendBg,
+          border: `1px solid ${legendBorder}`,
           borderRadius: 8,
           padding: '6px 8px',
           fontSize: 12,
-          lineHeight: 1.35
+          lineHeight: 1.35,
+          color: legendTextColor
         }}
       >
         <div>Close</div>

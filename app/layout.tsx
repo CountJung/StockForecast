@@ -3,7 +3,7 @@ import { Providers } from '@/app/providers'
 
 export const metadata: Metadata = {
   title: 'Stock Forecast',
-  description: 'Quote fetch + GBM Monte Carlo forecast dashboard'
+  description: 'Block bootstrap scenario forecast dashboard (5D/20D/60D)'
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

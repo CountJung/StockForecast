@@ -123,6 +123,8 @@ export async function GET(request: Request) {
       range: rangeParam,
       count: filtered.length,
       ohlcv: filtered
+    }, {
+      headers: { 'Cache-Control': 's-maxage=3600, stale-while-revalidate=86400' }
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown server error'

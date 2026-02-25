@@ -3,21 +3,26 @@
 import { useMemo, useState } from 'react'
 import {
   Alert,
+  AppBar,
   Box,
   Button,
   Card,
   CardContent,
   Container,
+  IconButton,
   LinearProgress,
   Skeleton,
   Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Toolbar,
   Typography
 } from '@mui/material'
+import { DarkMode as DarkModeIcon, LightMode as LightModeIcon } from '@mui/icons-material'
 import { PriceChart } from '@/components/PriceChart'
 import { ScenarioPanel } from '@/components/ScenarioPanel'
+import { useColorMode } from '@/app/providers'
 import type { ForecastResponse, PriceBar, QuoteItem } from '@/lib/types'
 
 type QuotesApiResponse = {
@@ -97,21 +102,26 @@ export default function HomePage() {
     }
   }
 
+  const { mode, toggle } = useColorMode()
+
   return (
+    <>
+    <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: 'divider' }}>
+      <Toolbar>
+        <Typography variant="h6" fontWeight={700} sx={{ flexGrow: 1 }}>
+          Stock Forecast
+        </Typography>
+        <IconButton onClick={toggle} color="inherit" aria-label="toggle theme">
+          {mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}
+        </IconButton>
+      </Toolbar>
+    </AppBar>
     <Container maxWidth="lg" sx={{ py: { xs: 3, md: 6 } }}>
       <Stack spacing={3}>
-        <Box>
-          <Typography variant="h4" fontWeight={800}>
-            Stock Forecast Dashboard
-          </Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Block bootstrap scenario engine (5D / 20D / 60D)
-          </Typography>
-        </Box>
 
         <Card elevation={0} sx={{ border: '1px solid', borderColor: 'divider' }}>
           <CardContent>
-            <Stack spacing={2}>
+            <Stack spacing={2} component="form" onSubmit={(e: React.FormEvent) => { e.preventDefault(); runAnalysis() }}>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -148,7 +158,7 @@ export default function HomePage() {
                 </Box>
               </Stack>
 
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'flex-end' }}>
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
                     Horizons
@@ -173,9 +183,9 @@ export default function HomePage() {
                 <Button
                   variant="contained"
                   size="large"
-                  onClick={runAnalysis}
+                  type="submit"
                   disabled={loading}
-                  sx={{ minWidth: { md: 200 }, py: 1.5 }}
+                  sx={{ minWidth: { md: 200 }, height: 40 }}
                 >
                   분석
                 </Button>
@@ -210,6 +220,36 @@ export default function HomePage() {
               </Typography>
             </CardContent>
           </Card>
+
+          {forecast?.analyst?.ptAvg != null ? (
+            <Card sx={{ flex: 1 }}>
+              <CardContent>
+                <Typography variant="overline" color="text.secondary">
+                  Analyst Target (Avg)
+                </Typography>
+                <Typography variant="h5" fontWeight={700}>
+                  {forecast.analyst.ptAvg.toFixed(2)}
+                </Typography>
+                <Stack direction="row" spacing={2} sx={{ mt: 0.5 }}>
+                  {forecast.analyst.ptLow != null ? (
+                    <Typography variant="body2" color="text.secondary">
+                      Low: {forecast.analyst.ptLow.toFixed(2)}
+                    </Typography>
+                  ) : null}
+                  {forecast.analyst.ptHigh != null ? (
+                    <Typography variant="body2" color="text.secondary">
+                      High: {forecast.analyst.ptHigh.toFixed(2)}
+                    </Typography>
+                  ) : null}
+                  {forecast.analyst.ptAvgProb60d != null ? (
+                    <Typography variant="body2" color="text.secondary">
+                      P(≥Avg, 60D): {(forecast.analyst.ptAvgProb60d * 100).toFixed(1)}%
+                    </Typography>
+                  ) : null}
+                </Stack>
+              </CardContent>
+            </Card>
+          ) : null}
         </Stack>
 
         {loading && !forecast ? (
@@ -231,7 +271,13 @@ export default function HomePage() {
             </Stack>
           </CardContent>
         </Card>
+
+        <Typography variant="caption" color="text.secondary" textAlign="center" sx={{ py: 2 }}>
+          본 서비스는 교육/프로토타입 목적이며 투자 조언이 아닙니다. 결과의 정확성을 보장하지 않습니다.
+          데이터 출처: Stooq (EOD, 지연 가능). 개인정보를 수집하지 않습니다.
+        </Typography>
       </Stack>
     </Container>
+    </>
   )
 }
